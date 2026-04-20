@@ -4,6 +4,12 @@
 
 #include <iostream>
 #include <time.h>
+#include <thread>
+#include <vector>
+#include <atomic>
+#include <algorithm>
+#include <cstdint>
+#include <array>
 
 struct card
 {
@@ -16,9 +22,12 @@ void deal(void);
 void predraw(int rank1, int rank2, int rank3, int rank4, int rank5, int suit1, int suit2, int suit3, int suit4, int suit5, int weight);
 void draw(int c1, int c2, int c3, int c4, int c5, int weight);
 int score(card deal[]);
+void compute_draw_contribs(int c1, int c2, int c3, int c4, int c5, int weight, std::array<__int64,10> &out_contribs, std::vector<int> &merged);
 
-int score_array[2598960];
+uint8_t score_array[2598960];
 card deck[52];
+struct Job { int c1,c2,c3,c4,c5; int weight; };
+static std::vector<Job> jobs;
 int draw_combinations_array[] = { 1533939, 178365, 178365, 16215, 178365, 16215, 16215, 1081, 178365, 16215, 16215, 1081, 16215, 1081, 1081, 47, 178365, 16215, 16215, 1081, 16215, 1081, 1081, 47, 16215, 1081, 1081, 47, 1081, 47, 47, 1 };
 int weighting_array[] = { 5, 43, 43, 473, 43, 473, 473, 7095, 43, 473, 473, 7095, 473, 7095, 7095, 163185, 43, 473, 473, 7095, 473, 7095, 7095, 163185, 473, 7095, 7095, 163185, 7095, 163185, 163185, 7669695 };
 __int64 tot_combinations[52];
@@ -272,6 +281,53 @@ void deal(void)
             }
         }
     }
+    // now process recorded jobs in parallel
+    size_t job_count = jobs.size();
+    if (job_count == 0)
+    {
+        printf("Total weight=\t%i\n", tot_weight);
+        for (i = 9; i >= 0; i--)
+            printf("%s\t%i\t%I64i\n", hand_name_array[i], win_array[i], tot_combinations[i]);
+        return;
+    }
+
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 4;
+    int num_threads = (int)std::min<size_t>(hw, job_count);
+    if (num_threads < 1) num_threads = 1;
+
+    std::vector<std::array<__int64,10>> thread_totals(num_threads);
+    for (int t = 0; t < num_threads; ++t)
+        for (int j = 0; j < 10; ++j) thread_totals[t][j] = 0;
+
+    std::atomic_size_t next_job(0);
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    for (int t = 0; t < num_threads; ++t)
+    {
+        threads.emplace_back([t, &next_job, job_count, &thread_totals]() {
+            std::vector<int> merged(32 * 10);
+            std::array<__int64,10> contribs{};
+            while (true)
+            {
+                size_t idx = next_job.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= job_count) break;
+                const Job &job = jobs[idx];
+                compute_draw_contribs(job.c1, job.c2, job.c3, job.c4, job.c5, job.weight, contribs, merged);
+                for (int j = 0; j < 10; ++j)
+                    thread_totals[t][j] += contribs[j];
+            }
+        });
+    }
+    for (auto &th : threads) th.join();
+
+    for (int j = 0; j <= 9; ++j)
+    {
+        tot_combinations[j] = 0;
+        for (int t = 0; t < num_threads; ++t)
+            tot_combinations[j] += thread_totals[t][j];
+    }
+
     printf("Total weight=\t%i\n", tot_weight);
     for (i = 9; i >= 0; i--)
         printf("%s\t%i\t%I64i\n", hand_name_array[i], win_array[i], tot_combinations[i]);
@@ -285,31 +341,30 @@ void predraw(int rank1, int rank2, int rank3, int rank4, int rank5, int suit1, i
     c3 = rank3 * 4 + suit3;
     c4 = rank4 * 4 + suit4;
     c5 = rank5 * 4 + suit5;
+    // record job for later parallel processing
     tot_weight += weight;
-    draw(c1, c2, c3, c4, c5, weight);
+    Job job; job.c1 = c1; job.c2 = c2; job.c3 = c3; job.c4 = c4; job.c5 = c5; job.weight = weight;
+    jobs.push_back(job);
 }
 
-void draw(int c1, int c2, int c3, int c4, int c5, int weight)
+// Compute contributions for a single job into `out_contribs` using `merged` (reused buffer)
+void compute_draw_contribs(int c1, int c2, int c3, int c4, int c5, int weight, std::array<__int64,10> &out_contribs, std::vector<int> &merged)
 {
-    int i, j, d1, d2, d3, d4, d5, index, sc, draw_score_array[32][10];
+    // merged is size 32*10
+    std::fill(merged.begin(), merged.end(), 0);
     int count = 0;
-    for (i = 0; i <= 31; i++)
+    for (int d1 = 0; d1 <= 47; d1++)
     {
-        for (j = 0; j <= 9; j++)
-            draw_score_array[i][j] = 0;
-    }
-    for (d1 = 0; d1 <= 47; d1++)
-    {
-        for (d2 = d1 + 1; d2 <= 48; d2++)
+        for (int d2 = d1 + 1; d2 <= 48; d2++)
         {
-            for (d3 = d2 + 1; d3 <= 49; d3++)
+            for (int d3 = d2 + 1; d3 <= 49; d3++)
             {
-                for (d4 = d3 + 1; d4 <= 50; d4++)
+                for (int d4 = d3 + 1; d4 <= 50; d4++)
                 {
-                    for (d5 = d4 + 1; d5 <= 51; d5++)
+                    for (int d5 = d4 + 1; d5 <= 51; d5++)
                     {
-                        sc = score_array[count];
-                        index = 0;
+                        int sc = score_array[count++];
+                        int index = 0;
                         if ((d1 == c1) || (d2 == c1) || (d3 == c1) || (d4 == c1) || (d5 == c1))
                             index += 16;
                         if ((d1 == c2) || (d2 == c2) || (d3 == c2) || (d4 == c2) || (d5 == c2))
@@ -320,21 +375,22 @@ void draw(int c1, int c2, int c3, int c4, int c5, int weight)
                             index += 2;
                         if ((d1 == c5) || (d2 == c5) || (d3 == c5) || (d4 == c5) || (d5 == c5))
                             index += 1;
-                        draw_score_array[index][sc]++;
-                        count++;
+                        merged[index * 10 + sc]++;
                     }
                 }
             }
         }
     }
+
+    // find best play and write contributions (weight * count * weighting)
     double ev;
-    double max_ev = 0;
+    double max_ev = 0.0;
     int best_play = 0;
-    for (i = 0; i <= 31; i++)
+    for (int i = 0; i <= 31; ++i)
     {
         ev = 0.0;
-        for (j = 0; j <= 9; j++)
-            ev += draw_score_array[i][j] * win_array[j];
+        for (int j = 0; j <= 9; ++j)
+            ev += (double)merged[i * 10 + j] * win_array[j];
         ev /= draw_combinations_array[i];
         if (ev > max_ev)
         {
@@ -342,10 +398,16 @@ void draw(int c1, int c2, int c3, int c4, int c5, int weight)
             best_play = i;
         }
     }
-    for (j = 0; j <= 9; j++)
+    for (int j = 0; j <= 9; ++j)
     {
-        tot_combinations[j] += weight * draw_score_array[best_play][j] * weighting_array[best_play];
+        out_contribs[j] = (__int64)weight * (__int64)merged[best_play * 10 + j] * (__int64)weighting_array[best_play];
     }
+}
+
+void draw(int c1, int c2, int c3, int c4, int c5, int weight)
+{
+    // Deprecated: draw is now done in compute_draw_contribs and handled via jobs
+    (void)c1; (void)c2; (void)c3; (void)c4; (void)c5; (void)weight;
 }
 
 int score(card deal[])

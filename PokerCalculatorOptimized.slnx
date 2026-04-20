@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="PokerCalculatorOptimized/PokerCalculatorOptimized.vcxproj" />
+  <Project Path="PokerCalculatorOptimized/PokerCalculatorOptimized.vcxproj" Id="552d7174-5031-4916-8fe4-d0498a142b2d" />
 </Solution>
